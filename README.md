@@ -1,111 +1,81 @@
-local Players = game:GetService("Players")
+-- Colocar este Script em ServerScriptService
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 
-local player = Players.LocalPlayer
-local QAEvent = ReplicatedStorage:WaitForChild("QAControlEvent")
-
--- ========== GUI ==========
-local gui = Instance.new("ScreenGui")
-gui.Name = "QAGui"
-gui.ResetOnSpawn = false
-gui.Parent = player:WaitForChild("PlayerGui")
-
-local frame = Instance.new("Frame")
-frame.Size = UDim2.fromScale(0.2, 0.32)
-frame.Position = UDim2.fromScale(0.75, 0.32)
-frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-frame.BorderSizePixel = 0
-frame.Active = true
-frame.Draggable = true
-frame.Parent = gui
-
-local corner = Instance.new("UICorner", frame)
-corner.CornerRadius = UDim.new(0, 10)
-
-local layout = Instance.new("UIListLayout", frame)
-layout.Padding = UDim.new(0, 6)
-
-local padding = Instance.new("UIPadding", frame)
-padding.PaddingTop = UDim.new(0, 8)
-padding.PaddingBottom = UDim.new(0, 8)
-padding.PaddingLeft = UDim.new(0, 8)
-padding.PaddingRight = UDim.new(0, 8)
-
--- ========== STATUS ==========
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1, 0, 0, 36)
-statusLabel.TextScaled = true
-statusLabel.Font = Enum.Font.GothamBold
-statusLabel.BackgroundTransparency = 1
-statusLabel.TextColor3 = Color3.fromRGB(200, 80, 80)
-statusLabel.Text = "QA: DESATIVADO"
-statusLabel.Parent = frame
-
--- ========== MULTIPLIER LABEL ==========
-local multiplierLabel = Instance.new("TextLabel")
-multiplierLabel.Size = UDim2.new(1, 0, 0, 30)
-multiplierLabel.TextScaled = true
-multiplierLabel.Font = Enum.Font.Gotham
-multiplierLabel.BackgroundTransparency = 1
-multiplierLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-multiplierLabel.Text = "Multiplicador: x1"
-multiplierLabel.Parent = frame
-
--- ========== BOTÕES ==========
-local buttons = {}
-
-local function createButton(text, color, callback)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 0, 40)
-    btn.Text = text
-    btn.Font = Enum.Font.GothamBold
-    btn.TextScaled = true
-    btn.BackgroundColor3 = color
-    btn.TextColor3 = Color3.new(1,1,1)
-    btn.Parent = frame
-
-    local c = Instance.new("UICorner", btn)
-    c.CornerRadius = UDim.new(0, 8)
-
-    btn.MouseButton1Click:Connect(callback)
-    table.insert(buttons, btn)
+-- Criar RemoteEvents (se já existirem, reaproveita)
+local clickEvent = ReplicatedStorage:FindFirstChild("ClickEvent")
+if not clickEvent then
+    clickEvent = Instance.new("RemoteEvent")
+    clickEvent.Name = "ClickEvent"
+    clickEvent.Parent = ReplicatedStorage
 end
 
-createButton("Ativar x100", Color3.fromRGB(60, 120, 255), function()
-    QAEvent:FireServer("ENABLE", 100)
+local multiplierUpdateEvent = ReplicatedStorage:FindFirstChild("MultiplierUpdateEvent")
+if not multiplierUpdateEvent then
+    multiplierUpdateEvent = Instance.new("RemoteEvent")
+    multiplierUpdateEvent.Name = "MultiplierUpdateEvent"
+    multiplierUpdateEvent.Parent = ReplicatedStorage
+end
+
+-- Tabela para armazenar estado do multiplicador por jogador no servidor
+local playerMultipliers = {} -- [player] = {enabled = false, value = 1}
+
+-- Configurações de segurança / limites
+local MAX_MULTIPLIER = 10
+local MIN_MULTIPLIER = 1
+local BASE_CLICK_AMOUNT = 1
+
+-- Cria leaderstats "Clicks"
+local function setupLeaderstats(player)
+    local leaderstats = Instance.new("Folder")
+    leaderstats.Name = "leaderstats"
+    leaderstats.Parent = player
+
+    local clicks = Instance.new("IntValue")
+    clicks.Name = "Clicks"
+    clicks.Value = 0
+    clicks.Parent = leaderstats
+end
+
+Players.PlayerAdded:Connect(function(player)
+    setupLeaderstats(player)
+    -- estado inicial do multiplicador
+    playerMultipliers[player] = { enabled = false, value = 1 }
 end)
 
-createButton("Ativar x1000", Color3.fromRGB(80, 160, 255), function()
-    QAEvent:FireServer("ENABLE", 1000)
+Players.PlayerRemoving:Connect(function(player)
+    playerMultipliers[player] = nil
 end)
 
-createButton("Ativar x1M", Color3.fromRGB(100, 200, 255), function()
-    QAEvent:FireServer("ENABLE", 1000000)
+-- Atualiza estado do multiplicador a pedido do cliente (o servidor faz clamp)
+multiplierUpdateEvent.OnServerEvent:Connect(function(player, enabled, value)
+    if not player then return end
+    value = tonumber(value) or 1
+    if value < MIN_MULTIPLIER then value = MIN_MULTIPLIER end
+    if value > MAX_MULTIPLIER then value = MAX_MULTIPLIER end
+    playerMultipliers[player] = { enabled = enabled and true or false, value = math.floor(value) }
+    -- Opcional: enviar confirmação de volta ao cliente (poderia usar outro RemoteEvent ou Bindable)
 end)
 
-createButton("Desativar QA", Color3.fromRGB(180, 60, 60), function()
-    QAEvent:FireServer("DISABLE")
-end)
-
--- ========== ATUALIZAÇÃO VISUAL ==========
-local function updateUI()
-    local enabled = player:GetAttribute("QAEnabled")
-    local multiplier = player:GetAttribute("QAMultiplier") or 1
-
-    if enabled then
-        statusLabel.Text = "QA: ATIVO"
-        statusLabel.TextColor3 = Color3.fromRGB(80, 200, 120)
-        multiplierLabel.Text = "Multiplicador: x" .. tostring(multiplier)
-    else
-        statusLabel.Text = "QA: DESATIVADO"
-        statusLabel.TextColor3 = Color3.fromRGB(200, 80, 80)
-        multiplierLabel.Text = "Multiplicador: x1"
+-- Processa cliques pedidos pelo cliente
+clickEvent.OnServerEvent:Connect(function(player, extraAmount)
+    if not player then return end
+    local multState = playerMultipliers[player] or { enabled = false, value = 1 }
+    local extra = tonumber(extraAmount) or 0
+    local increment = BASE_CLICK_AMOUNT + extra
+    if multState.enabled then
+        increment = math.floor(increment * multState.value)
     end
-end
 
--- Atualiza quando servidor muda
-player:GetAttributeChangedSignal("QAEnabled"):Connect(updateUI)
-player:GetAttributeChangedSignal("QAMultiplier"):Connect(updateUI)
+    -- Segurança: limitar ganho por clique para evitar exploração
+    local MAX_GAIN_PER_CLICK = 1000
+    if increment > MAX_GAIN_PER_CLICK then
+        increment = MAX_GAIN_PER_CLICK
+    end
 
--- Inicial
-task.delay(1, updateUI)# APx
+    local clicks = player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Clicks")
+    if clicks and clicks:IsA("IntValue") then
+        clicks.Value = clicks.Value + increment
+    end
+end)
